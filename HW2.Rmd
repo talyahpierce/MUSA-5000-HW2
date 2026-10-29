@@ -1,0 +1,433 @@
+---
+title: "hw2"
+author: "Talyah Pierce, Gil Rezin, Anthony Danh"
+date: "2026-10-24"
+output: html_document
+---
+
+Import the file RegressionData.csv into R using the read.csv command.
+```{r}
+library(sf)
+library(ggplot2)
+library(spdep)
+library(spgwr)
+library(tmap)
+library(spatialreg)
+library(whitestrap)
+library(lmtest)
+library(tseries)
+library(stargazer)
+
+df <- st_read("Lecture 1 - RegressionData/RegressionData.shp")
+```
+
+```{r, 1A: CREATE PROPER VARIABLES}
+
+# Create the PLUS1 variable #
+
+df$PLUS1 <- df$NBelPov100 + 1
+
+# Create LNNBELPOV variable #
+## Note: this already exists in the data, but following along the instructions ##
+
+df$LNNBELPOV <- log(df$PLUS1)
+
+```
+
+```{r, 1B: CREATING QUEEN WEIGHT}
+
+# Create queen weight matrix #
+
+queen <-poly2nb(df, row.names=df$POLY_ID)
+
+summary(queen)
+```
+```{r, 1C: COMPUTE GLOBAL MORAN'S I W/QUEEN MATRIX}
+
+# Compute global Maron's I with queen matrix #
+
+queenlist <- nb2listw(queen, style = 'W')
+
+global_moran <- moran(df$LNMEDHVAL, queenlist, n=length(queenlist$neighbours), S0=Szero(queenlist))$`I` 
+
+# Run permutation test #
+
+moranMC <- moran.mc(df$LNMEDHVAL, queenlist, nsim=999, alternative="two.sided")
+
+# Create a histogram of global Moran's I values #
+
+moranMCres<-moranMC$res
+
+global_moran_i_graph <- ggplot(data.frame(moranMCres), aes(moranMCres)) + 
+  geom_histogram(bins=100) + 
+  geom_vline(xintercept = global_moran, 
+             color = "red", 
+             linetype = "dashed") + 
+  labs(title = "Global Moran's I Permutation Test Histogram",
+       x = "Moran's I Value", 
+       y = "Frequency") +
+  theme_minimal()
+
+global_moran_i_graph
+paste("The global Moran's I is", print(global_moran))
+paste("The global Moran's I value of ", global_moran, "is statistically significant at p =", moranMC$p.value)
+      
+```
+
+```{r, 1D: RUN LISA ANALYSIS}
+
+# Run local Moran's I analysis #
+
+lmoran <- localmoran(df$LNMEDHVAL, queenlist)
+
+df.lmoran <-cbind(df, as.data.frame(lmoran))
+
+lmoran
+
+```
+
+```{r, 1E: RUN OLS REGRESSION}
+
+# Run previous OLS regression model #
+
+regression_model <- lm(LNMEDHVAL ~ PCTVACANT + PCTSINGLES + PCTBACHMOR + LNNBELPOV, data = df)
+
+# Display regression output #
+
+stargazer(regression_model, type = "text")
+
+# Save OLS residuals #
+
+df$ols_residu <- regression_model$residuals
+
+```
+
+```{r, 1F: CREATE SPATIALLY LAGGED RESIDUALS}
+
+# Create spatially lagged residuals #
+
+df$ols_residu <- residuals(regression_model)
+
+df$wt_residuals <- lag.listw(queenlist, df$ols_residu, zero.policy = TRUE)
+
+```
+
+```{r, 1G: PLOT OLS RESIDUALS AGAINST OLS RESIDUALS}
+
+scatterplot_ols_weighted <- ggplot(
+  data = df, 
+  aes(x = wt_residuals, y = ols_residu)) + 
+  geom_point() + 
+  labs(title = "OLS Residuals vs. Spatial Lag Residuals",
+       x = "Spatial Lag Residuals", 
+       y = "OLS Residuals") +
+  theme_minimal()
+
+scatterplot_ols_weighted
+
+residuals_coef <- lm(ols_residu ~ wt_residuals, data = df)
+
+stargazer(residuals_coef, type = "text")
+
+```
+
+```{r, 1H: REPEAT 1C}
+
+# Compute global Maron's I with queen matrix #
+
+global_moran_residuals <- moran(df$ols_residu, queenlist, n=length(queenlist$neighbours), S0=Szero(queenlist))$`I` 
+
+paste("The global Moran's I of the OLS regression residuals is", print(global_moran_residuals))
+
+# Run permutation test #
+
+gmoran_resMC <- moran.mc(df$ols_residu, queenlist, nsim=999, alternative="two.sided")
+
+paste("The value of the global Moran's I of the OLS regression residuals is", global_moran_residuals, "is statistically significant at p =", gmoran_resMC$p.value)
+
+# Create a histogram of global Moran's I values #
+
+gmoran_res <-gmoran_resMC$res
+
+ols_residu_hist <- ggplot(data.frame(gmoran_res), aes(gmoran_res)) + 
+  geom_histogram(bins=100) + 
+  geom_vline(xintercept = global_moran_residuals, 
+             color = "red", 
+             linetype = "dashed") + 
+  labs(title = "OLS Residuals Global Moran's I Permutation Test Histogram",
+       x = "Moran's I Value", 
+       y = "Frequency") +
+  theme_minimal()
+
+ols_residu_hist
+
+```
+
+```{r, 1I: SPATIAL LAG}
+
+# Present the summary of the spatial lag regression #
+
+lagreg<-lagsarlm(LNMEDHVAL ~ PCTVACANT + PCTSINGLES + PCTBACHMOR + LNNBELPOV, data = df, queenlist)
+
+stargazer(lagreg, type = "text")
+
+# Compute global Maron's I with queen matrix #
+lagreg_residuals <- lagreg$residuals
+
+global_moran_lag_reg_residuals <- moran(lagreg_residuals, queenlist, n=length(queenlist$neighbours), S0=Szero(queenlist))$`I` 
+
+paste("The global Moran's I of the spatially lagged residuals", print(global_moran_lag_reg_residuals))
+
+# Run permutation test #
+
+lag_reg_perm <- moran.mc(lagreg_residuals, queenlist, nsim=999, alternative="two.sided")
+
+lag_reg_perm_res <- lag_reg_perm$res
+
+paste("The value of the global Moran's I of the OLS regression residuals is", global_moran_lag_reg_residuals, "is statistically significant at p =", lag_reg_perm$p.value)
+
+sl_residu_hist <- ggplot(data.frame(lag_reg_perm_res), aes(lag_reg_perm_res)) + 
+  geom_histogram(bins=100) + 
+  geom_vline(xintercept = global_moran_lag_reg_residuals, 
+             color = "red", 
+             linetype = "dashed") + 
+  labs(title = "Spatial Lag Residuals Global Moran's I Permutation Test Histogram",
+       x = "Moran's I Value", 
+       y = "Frequency") +
+  theme_minimal()
+
+sl_residu_hist
+
+```
+
+```{r, 1J: SPATIAL ERROR}
+
+# Run error model #
+
+errreg <- errorsarlm(formula=LNMEDHVAL ~ PCTVACANT + PCTSINGLES + PCTBACHMOR + LNNBELPOV, data=df, queenlist)
+
+reserr <- residuals(errreg)
+
+moran_i_res_err <- moran(reserr, queenlist, n=length(queenlist$neighbours), S0=Szero(queenlist))$`I` 
+
+errMoranMc <- moran.mc(reserr, queenlist, 999, alternative="two.sided")
+
+errMoranmc_res <- errMoranMc$res
+
+stargazer(errreg, type = "text")
+
+# Scatterplot and permutation results ##
+
+spatial_error_plot <- ggplot(data.frame(errMoranmc_res), aes(errMoranmc_res)) + 
+  geom_histogram(bins=100) + 
+  geom_vline(xintercept = moran_i_res_err, 
+             color = "red", 
+             linetype = "dashed") + 
+  labs(title = "Spatial Error Residuals Global Moran's I Permutation Test Histogram",
+       x = "Moran's I Value", 
+       y = "Frequency") +
+  theme_minimal()
+
+spatial_error_plot
+
+paste0("The Moran's I value is ", moran_i_res_err, " and the p-value is ", errMoranMc$p.value)
+
+```
+
+```{r, PART 1K: ALL OUTPUTS}
+
+## Global Moran's I LNMEDVAL results ##
+
+global_moran_i_graph
+paste("The global Moran's I is", print(global_moran))
+paste("The global Moran's I value of ", global_moran, "is statistically significant at p =", moranMC$p.value)
+
+## LISA LNMEDVAL results ##
+
+lmoran
+
+## OLS Regression Results ##
+
+stargazer(regression_model, type = "text")
+
+## Spatial Lag regression results ##
+
+stargazer(lagreg, type = "text")
+
+## Spatial Error regression results ##
+
+stargazer(errreg, type = "text")
+
+## Weighted and OLS scatterplot ##
+
+scatterplot_ols_weighted
+
+## Moran's I permutation scatterplot OLS ##
+
+ols_residu_hist
+
+## Moran's I permutation scatterplot spatial lag ##
+
+sl_residu_hist
+
+## Moran's I permutation scatterplot spatial error ##
+
+spatial_error_plot
+
+```
+
+```{r, 2A: GLOBAL REGRESSION OUTPUT}
+
+# Run geographically weighted regression #
+
+shps <- as(df, 'Spatial') 
+
+class(df)
+
+bw <- gwr.sel(formula=LNMEDHVAL ~ PCTVACANT + PCTSINGLES + PCTBACHMOR + LNNBELPOV, 
+            data=shps,
+            method = "aic",
+            adapt = TRUE)
+
+gwrmodel <- gwr(formula=LNMEDHVAL ~ PCTVACANT + PCTSINGLES + PCTBACHMOR + LNNBELPOV,
+              data=shps,
+              adapt = bw, 
+              gweight=gwr.Gauss,
+              se.fit=TRUE, 
+              hatmatrix = TRUE)
+
+## Pull out R-squared, AIC, AICc ##
+
+global_rsquared <- 1 - (gwrmodel$results$rss / gwrmodel$gTSS)
+
+AICc <- gwrmodel$results$AICc
+
+# note: this may need to be corrected, I talked to Eugene about the fact that no AIC shows up in the resultsexcept for AIC h, c, and b. He said the package may have updated and that I should email him ##
+
+AIC <- gwrmodel$results$AICh
+
+paste0("The global R squared is ", global_rsquared, ", the AICc is ", AICc, " and the AIC is", AIC)
+
+```
+
+```{r, 2B: CHOROPLETH R SQUARED}
+
+## Save the GWR results ##
+
+gwrresults<-as.data.frame(gwrmodel$SDF)
+
+shps$localR2 <- gwrresults$localR2
+
+## Create map ##
+
+tm_shape(shps)+
+  tm_fill(col='localR2',  breaks=c(0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9), n=5, palette = 'Blues')+
+  tm_layout(frame=FALSE)
+
+```
+
+
+
+```{r, 2C: SCATTERPLOT AND PERMUTATIONS}
+
+## Permutation test for GWR ##
+
+gwr_moran_i <- moran(gwrresults$gwr.e, queenlist, n=length(queenlist$neighbours), S0=Szero(queenlist))$`I` 
+
+gwrMoranMc <- moran.mc(gwrresults$gwr.e, queenlist, 999, alternative="two.sided")
+
+shps$gwr_residuals <- gwrresults$gwr.e
+
+gwr_res_perm <- gwrMoranMc$res
+
+gwr_permutation_plot <- ggplot(data.frame(gwr_res_perm), aes(gwr_res_perm)) + 
+  geom_histogram(bins=100) + 
+  geom_vline(xintercept = gwr_moran_i, 
+             color = "red", 
+             linetype = "dashed") + 
+  labs(title = "GWR Residuals Permutation Test Histogram",
+       x = "Moran's I Value", 
+       y = "Frequency") +
+  theme_minimal()
+
+gwr_permutation_plot
+
+paste0("The Moran's I for the GWR residuals is ", gwr_moran_i, " and the p-value is ", gwrMoranMc$p.value)
+
+## Spatially lag residuals ##
+
+shps$lagged_gwr <- lag.listw(queenlist, shps$gwr_residuals, zero.policy = TRUE)
+
+## Plot the residuals for GWR against spatial lag residuals ##
+
+ggplot(data = shps@data, aes(x = gwr_residuals, y = lagged_gwr)) + 
+  geom_point() + 
+  labs(title = "GWR Residuals vs. Spatial Lag Residuals",
+       x = "GWR Residuals", 
+       y = "Spatial Lag Residuals") +
+  theme_minimal()
+
+```
+
+
+
+```{r, 2D: MAP LOCAL REGRESSION}
+
+## Present maps on ratio of beta coefficients with standard error in GWR results ##
+
+# Vacant coefficient #
+shps$coefPCTVACANTst <- gwrresults$PCTVACANT/gwrresults$PCTVACANT_se
+
+coefPCTVACANT<-tm_shape(shps)+
+  tm_fill(col='coefPCTVACANTst', 
+          breaks=c(-Inf,-2, 0, 2, Inf),
+          labels = c("< -2", "-2 to 0", "0 to 2", "> 2"),
+          title='Standardized coefficient of PCTVACANT', 
+          palette= c("darkred", "pink", "lightblue", "darkblue")) +
+  tm_layout(frame=FALSE, title = 'Percent of Housing Vacant')
+  
+coefPCTVACANT
+
+# Single coefficient #
+
+shps$coefPCSINGLESst <- gwrresults$PCTSINGLES/gwrresults$PCTSINGLES_se
+
+coefPCTSINGLE <-tm_shape(shps)+
+  tm_fill(col='coefPCSINGLESst', 
+          breaks=c(-Inf,-2, 0, 2, Inf),
+          labels = c("< -2", "-2 to 0", "0 to 2", "> 2"),
+          title='Standardized coefficient of PCTSINGLE', 
+          palette= c("darkred", "pink", "lightblue", "darkblue")) +
+  tm_layout(frame=FALSE, title = 'Percent of Single Units')
+  
+coefPCTSINGLE
+
+## College educated ##
+
+shps$coefPCTBACHMORst <- gwrresults$PCTBACHMOR/gwrresults$PCTBACHMOR_se
+
+coefPCTBACHMOR <-tm_shape(shps)+
+  tm_fill(col='coefPCTBACHMORst', 
+          breaks=c(-Inf,-2, 0, 2, Inf),
+          labels = c("< -2", "-2 to 0", "0 to 2", "> 2"),
+          title='Standardized coefficient of PCTBACHMOR', 
+          palette= c("darkred", "pink", "lightblue", "darkblue")) +
+  tm_layout(frame=FALSE, title = 'Percent of College-Educated')
+
+coefPCTBACHMOR
+
+## Poverty ##
+
+shps$coefLNNBELPOVst <- gwrresults$LNNBELPOV/gwrresults$LNNBELPOV_se
+
+coefLNNBELPOV <-tm_shape(shps)+
+  tm_fill(col='coefLNNBELPOVst', 
+          breaks=c(-Inf,-2, 0, 2, Inf),
+          labels = c("< -2", "-2 to 0", "0 to 2", "> 2"),
+          title='Standardized coefficient of LNNBELPOV', 
+          palette= c("darkred", "pink", "lightblue", "darkblue")) +
+  tm_layout(frame=FALSE, title = 'Log of Impoverished People')
+
+coefLNNBELPOV
+
+```
