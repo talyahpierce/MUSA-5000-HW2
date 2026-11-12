@@ -82,7 +82,66 @@ lmoran <- localmoran(df$LNMEDHVAL, queenlist)
 
 df.lmoran <-cbind(df, as.data.frame(lmoran))
 
-lmoran
+tmap_mode("plot")
+
+df$lmp <- lmoran[, "Pr(z != E(Ii))"]
+
+df_shp <- st_make_valid(df) 
+
+mp <- moran.plot(as.vector(scale(df_shp$LNMEDHVAL)), queenlist)
+
+df_shp$quadrant <- NA
+
+# HH
+df_shp[(mp$x >= 0 & mp$wx >= 0) & (df_shp$lmp <= 0.05), "quadrant"]<- 1
+
+# LL
+df_shp[(mp$x <= 0 & mp$wx <= 0) & (df_shp$lmp <= 0.05), "quadrant"]<- 2
+
+# HL
+df_shp[(mp$x >= 0 & mp$wx <= 0) & (df_shp$lmp <= 0.05), "quadrant"]<- 3
+
+# LH
+df_shp[(mp$x <= 0 & mp$wx >= 0) & (df_shp$lmp <= 0.05), "quadrant"]<- 4
+
+# Not Significant
+df_shp[(df_shp$lmp > 0.05), "quadrant"] <- 5
+
+
+# LISA P-Value Map
+p_vals <- tm_shape(df_shp) +
+  tm_polygons(col = "lmp", title = "",
+              breaks = c(-Inf, 0.001, 0.01, 0.05, Inf),
+              palette = c("darkblue", "blue", "lightblue", "white")) +
+  tm_layout(
+    legend.outside = TRUE,
+    legend.text.size = 1,
+    legend.title.size = 1,
+    fontfamily = "Arial",
+    title = "LISA P-Value Map",
+    title.size = 1.2,
+    frame = FALSE
+  )
+
+# LISA Cluster Map
+clusters <- tm_shape(df_shp) +
+  tm_fill(col = "quadrant", title = "",
+          breaks = c(1, 2, 3, 4, 5, 6),
+          palette = c("red", "blue", "lightpink", "skyblue2", "white"),
+          labels = c("High-High", "Low-Low", "High-Low", "Low-High", "Non-significant")) +
+  tm_borders(alpha = 0.2) +
+  tm_layout(
+    frame = FALSE,
+    legend.outside = TRUE,
+    legend.text.size = 1,
+    legend.title.size = 1,
+    fontfamily = "Arial",
+    title = "LISA Cluster Map",
+    title.size = 1.2
+  )
+
+clusters
+p_vals
 
 ```
 
@@ -100,6 +159,18 @@ stargazer(regression_model, type = "text")
 
 df$ols_residu <- regression_model$residuals
 
+# Perform Breusch-Pagan test to see homo/heteroskedasticity #
+
+bp_ols_residuals <- bptest(regression_model, studentize=FALSE)
+
+bp_ols_residuals
+
+# Perform Jarque-Bera test to see normality of residuals #
+
+jb_ols_residuals <- jarque.bera.test(regression_model$residuals)
+
+jb_ols_residuals
+
 ```
 
 ```{r, 1F: CREATE SPATIALLY LAGGED RESIDUALS}
@@ -112,15 +183,15 @@ df$wt_residuals <- lag.listw(queenlist, df$ols_residu, zero.policy = TRUE)
 
 ```
 
-```{r, 1G: PLOT OLS RESIDUALS AGAINST OLS RESIDUALS}
+```{r, 1G: PLOT WEIGHTED RESIDUALS AGAINST OLS RESIDUALS}
 
 scatterplot_ols_weighted <- ggplot(
   data = df, 
-  aes(x = wt_residuals, y = ols_residu)) + 
+  aes(x = ols_residu, y = wt_residuals)) + 
   geom_point() + 
-  labs(title = "OLS Residuals vs. Spatial Lag Residuals",
-       x = "Spatial Lag Residuals", 
-       y = "OLS Residuals") +
+  labs(title = "OLS Residuals vs. Weighted Residuals",
+       x = "OLS Residuals", 
+       y = "Weighted Residuals") +
   theme_minimal()
 
 scatterplot_ols_weighted
@@ -161,6 +232,7 @@ ols_residu_hist <- ggplot(data.frame(gmoran_res), aes(gmoran_res)) +
 
 ols_residu_hist
 
+
 ```
 
 ```{r, 1I: SPATIAL LAG}
@@ -198,6 +270,21 @@ sl_residu_hist <- ggplot(data.frame(lag_reg_perm_res), aes(lag_reg_perm_res)) +
 
 sl_residu_hist
 
+# Check Breusch-Pagan test #
+
+ bptest.Sarlm(lagreg, studentize=FALSE)
+ 
+# Create scatterplot of OLS residuals against the spatial lag residuals #
+ 
+scatterplot_ols_spatiallag <- ggplot(
+  data = df, 
+  aes(x = ols_residu, y = lagreg_residuals)) + 
+  geom_point() + 
+  labs(title = "OLS Residuals vs. Spatial Lag Residuals",
+       x = "OLS Residuals", 
+       y = "Spatial Lag Residuals") +
+  theme_minimal()
+
 ```
 
 ```{r, 1J: SPATIAL ERROR}
@@ -231,6 +318,21 @@ spatial_error_plot <- ggplot(data.frame(errMoranmc_res), aes(errMoranmc_res)) +
 spatial_error_plot
 
 paste0("The Moran's I value is ", moran_i_res_err, " and the p-value is ", errMoranMc$p.value)
+
+# Check Breusch-Pagan test #
+
+ bptest.Sarlm(errreg, studentize=FALSE)
+ 
+ # Create scatterplot of OLS residuals against the spatial lag residuals #
+ 
+scatterplot_ols_spatialerror <- ggplot(
+  data = df, 
+  aes(x = ols_residu, y = reserr)) + 
+  geom_point() + 
+  labs(title = "OLS Residuals vs. Spatial Error Residuals",
+       x = "OLS Residuals", 
+       y = "Spatial Error Residuals") +
+  theme_minimal()
 
 ```
 
@@ -298,23 +400,30 @@ gwrmodel <- gwr(formula=LNMEDHVAL ~ PCTVACANT + PCTSINGLES + PCTBACHMOR + LNNBEL
 
 ## Pull out R-squared, AIC, AICc ##
 
-global_rsquared <- 1 - (gwrmodel$results$rss / gwrmodel$gTSS)
+gwrmodel
 
-AICc <- gwrmodel$results$AICc
+## Pull out residuals
 
-# note: this may need to be corrected, I talked to Eugene about the fact that no AIC shows up in the resultsexcept for AIC h, c, and b. He said the package may have updated and that I should email him ##
+gwrresults<-as.data.frame(gwrmodel$SDF)
 
-AIC <- gwrmodel$results$AICh
+df$gwr_residuals <- gwrresults$gwr.e
 
-paste0("The global R squared is ", global_rsquared, ", the AICc is ", AICc, " and the AIC is", AIC)
+## Create scatterplot of GWR residuals compared to OLS residuals ##
+
+scatterplot_ols_gwr <- ggplot(
+  data = df, 
+  aes(x = ols_residu, y = gwr_residuals)) + 
+  geom_point() + 
+  labs(title = "OLS Residuals vs. Geographic Weighted Regression Residuals",
+       x = "OLS Residuals", 
+       y = "Geographic Weighted Regression Residuals") +
+  theme_minimal()
 
 ```
 
 ```{r, 2B: CHOROPLETH R SQUARED}
 
 ## Save the GWR results ##
-
-gwrresults<-as.data.frame(gwrmodel$SDF)
 
 shps$localR2 <- gwrresults$localR2
 
@@ -427,6 +536,10 @@ coefLNNBELPOV <-tm_shape(shps)+
           title='Standardized coefficient of LNNBELPOV', 
           palette= c("darkred", "pink", "lightblue", "darkblue")) +
   tm_layout(frame=FALSE, title = 'Log of Impoverished People')
+
+coefLNNBELPOV
+
+```
 
 coefLNNBELPOV
 
