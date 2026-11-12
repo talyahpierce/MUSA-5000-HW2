@@ -540,7 +540,3 @@ coefLNNBELPOV <-tm_shape(shps)+
 coefLNNBELPOV
 
 ```
-
-coefLNNBELPOV
-
-```
